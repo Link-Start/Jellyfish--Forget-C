@@ -15,6 +15,7 @@ export type ProjectUpdate = {
     seed?: (number | null);
     unify_style?: (boolean | null);
     progress?: (number | null);
+    default_video_ratio?: (string | null);
     stats?: (Record<string, any> | null);
 };
 

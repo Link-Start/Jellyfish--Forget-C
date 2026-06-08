@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,8 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.task_manager import DeliveryMode, SqlAlchemyTaskStore, TaskManager
 from app.dependencies import get_db
 from app.models.task_links import GenerationTaskLink
-from app.services.film.generated_video import build_run_args, preview_prompt_and_images, run_video_generation_task
-from app.services.studio import mark_shot_generating
+from app.schemas.studio.shots import ShotVideoPromptPackRead
+from app.services.film.generated_video import build_run_args, preview_prompt_and_images
+from app.services.studio.shot_status import mark_shot_generating
+from app.tasks.execute_task import enqueue_task_execution
 from app.schemas.common import ApiResponse, created_response, success_response
 
 from .common import TaskCreated, _CreateOnlyTask
@@ -22,6 +22,7 @@ router = APIRouter()
 class VideoPromptPreviewResponse(BaseModel):
     prompt: str = Field(..., description="最终用于视频生成的提示词")
     images: list[str] = Field(default_factory=list, description="关联参考图 file_id 列表")
+    pack: ShotVideoPromptPackRead | None = Field(None, description="视频提示词预览上下文包")
 
 
 
@@ -36,13 +37,14 @@ async def preview_video_generation_prompt(
     db: AsyncSession = Depends(get_db),
 ) -> ApiResponse[VideoPromptPreviewResponse]:
     """预览视频生成的提示词与自动关联参考图。"""
-    prompt, images, _shot_detail = await preview_prompt_and_images(
+    prompt, images, pack = await preview_prompt_and_images(
         db,
         shot_id=body.shot_id,
         reference_mode=body.reference_mode,
         prompt=body.prompt,
+        images=body.images,
     )
-    return success_response(VideoPromptPreviewResponse(prompt=prompt, images=images))
+    return success_response(VideoPromptPreviewResponse(prompt=prompt, images=images, pack=pack))
 
 
 @router.post(
@@ -65,12 +67,13 @@ async def create_video_generation_task(
         reference_mode=body.reference_mode,
         prompt=body.prompt,
         images=body.images,
-        size=body.size,
+        ratio=body.ratio,
     )
 
     task_record = await tm.create(
         task=_CreateOnlyTask(),
         mode=DeliveryMode.async_polling,
+        task_kind="video_generation",
         run_args=run_args,
     )
     db.add(
@@ -86,5 +89,5 @@ async def create_video_generation_task(
     # 确保任务记录已提交，避免后台 runner 新 session 查询不到任务行而无法更新状态。
     await db.commit()
 
-    asyncio.create_task(run_video_generation_task(task_id=task_record.id, run_args=run_args))
+    enqueue_task_execution(task_record.id)
     return created_response(TaskCreated(task_id=task_record.id))

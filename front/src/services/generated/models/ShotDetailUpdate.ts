@@ -12,12 +12,14 @@ export type ShotDetailUpdate = {
     movement?: (CameraMovement | null);
     scene_id?: (string | null);
     duration?: (number | null);
+    override_video_ratio?: (string | null);
     mood_tags?: (Array<string> | null);
     atmosphere?: (string | null);
     follow_atmosphere?: (boolean | null);
     has_bgm?: (boolean | null);
     vfx_type?: (VFXType | null);
     vfx_note?: (string | null);
+    action_beats?: (Array<string> | null);
     first_frame_prompt?: (string | null);
     last_frame_prompt?: (string | null);
     key_frame_prompt?: (string | null);

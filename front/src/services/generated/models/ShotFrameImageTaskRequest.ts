@@ -19,12 +19,20 @@ export type ShotFrameImageTaskRequest = {
      */
     frame_type: ShotFrameType;
     /**
-     * 提示词（由前端传入，必填）。frame-render-prompt 与创建任务接口均使用该字段。
+     * 提示词（由前端传入，创建任务接口必填）。
      */
     prompt: string;
     /**
      * 参考资产条目列表（可多张，顺序有效）。后端会使用 item.file_id 作为参考图；无效条目会被跳过。
      */
     images?: Array<ShotLinkedAssetItem>;
+    /**
+     * 目标视频画幅比例；关键帧将按该画幅生成，以提升后续视频参考稳定性
+     */
+    target_ratio: '16:9' | '4:3' | '1:1' | '3:4' | '9:16' | '21:9' | '3:2' | '2:3';
+    /**
+     * 关键帧输出分辨率档位，默认 standard
+     */
+    resolution_profile?: ('standard' | 'high' | null);
 };
 

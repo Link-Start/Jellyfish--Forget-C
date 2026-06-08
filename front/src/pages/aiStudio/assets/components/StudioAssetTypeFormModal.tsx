@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Input, InputNumber, Modal, message } from 'antd'
-import { PROJECT_STYLE_OPTIONS_BY_VISUAL, ProjectVisualStyleAndStyleFields } from '../../project/ProjectVisualStyleAndStyleFields'
+import { ProjectVisualStyleAndStyleFields } from '../../project/ProjectVisualStyleAndStyleFields'
+import { useProjectStyleOptions } from '../../project/useProjectStyleOptions'
 
 export type StudioAssetLike = {
   id: string
@@ -28,6 +29,31 @@ export function normalizeStudioAsset(asset: StudioAssetLike): StudioAssetLike {
 function clampViewCount(value: number | null): number | null {
   if (value === null) return null
   return Math.max(0, Math.min(4, Math.trunc(value)))
+}
+
+function notifyShotAssetCreatedAndLinked(payload: {
+  projectId?: string
+  chapterId?: string
+  shotId?: string
+  assetId?: string
+  assetName: string
+}) {
+  if (!payload.projectId || !payload.chapterId || !payload.shotId) return
+  try {
+    window.opener?.postMessage(
+      {
+        type: 'studio-shot-asset-created-and-linked',
+        projectId: payload.projectId,
+        chapterId: payload.chapterId,
+        shotId: payload.shotId,
+        assetId: payload.assetId ?? null,
+        assetName: payload.assetName,
+      },
+      window.location.origin,
+    )
+  } catch {
+    // 跨窗口通知失败不阻塞创建成功。
+  }
 }
 
 type AssetMutationPayload = Record<string, unknown> & {
@@ -81,13 +107,14 @@ export function StudioAssetTypeFormModal({
   } | null
   onSeedConsumed?: () => void
 }) {
+  const { options: projectStyleOptions, defaultVisualStyle, getDefaultStyle } = useProjectStyleOptions()
   void _entityType
   const [formName, setFormName] = useState('')
   const [formDesc, setFormDesc] = useState('')
   const [formTags, setFormTags] = useState('')
   const [formViewCount, setFormViewCount] = useState<number | null>(null)
-  const [formVisualStyle, setFormVisualStyle] = useState<'现实' | '动漫'>('现实')
-  const [formStyle, setFormStyle] = useState<string>(PROJECT_STYLE_OPTIONS_BY_VISUAL['现实'][0]?.value ?? '真人都市')
+  const [formVisualStyle, setFormVisualStyle] = useState<'现实' | '动漫'>(defaultVisualStyle as '现实' | '动漫')
+  const [formStyle, setFormStyle] = useState<string>(getDefaultStyle(defaultVisualStyle))
   const createFormInitializedRef = useRef(false)
 
   useEffect(() => {
@@ -100,12 +127,11 @@ export function StudioAssetTypeFormModal({
       setFormDesc(editing.description ?? '')
       setFormTags((editing.tags ?? []).join(', '))
       setFormViewCount(editing.view_count ?? null)
-      const nextVisual = (((editing as { visual_style?: '现实' | '动漫' }).visual_style ?? '现实') as '现实' | '动漫')
+      const nextVisual = (((editing as { visual_style?: '现实' | '动漫' }).visual_style ?? defaultVisualStyle) as '现实' | '动漫')
       setFormVisualStyle(nextVisual)
       setFormStyle(
         ((editing as { style?: string }).style as string | undefined) ??
-          PROJECT_STYLE_OPTIONS_BY_VISUAL[nextVisual]?.[0]?.value ??
-          '真人都市',
+          getDefaultStyle(nextVisual),
       )
       createFormInitializedRef.current = true
       return
@@ -115,20 +141,20 @@ export function StudioAssetTypeFormModal({
       if (seedCreateForm) {
         setFormName(seedCreateForm.name ?? '')
         setFormDesc(seedCreateForm.description ?? '')
-        const nextVisual = seedCreateForm.visual_style ?? '现实'
+        const nextVisual = seedCreateForm.visual_style ?? (defaultVisualStyle as '现实' | '动漫')
         setFormVisualStyle(nextVisual)
-        setFormStyle(seedCreateForm.style ?? PROJECT_STYLE_OPTIONS_BY_VISUAL[nextVisual]?.[0]?.value ?? '真人都市')
+        setFormStyle(seedCreateForm.style ?? getDefaultStyle(nextVisual))
         onSeedConsumed?.()
       } else {
         setFormName('')
         setFormDesc('')
-        setFormVisualStyle('现实')
-        setFormStyle(PROJECT_STYLE_OPTIONS_BY_VISUAL['现实'][0]?.value ?? '真人都市')
+        setFormVisualStyle(defaultVisualStyle as '现实' | '动漫')
+        setFormStyle(getDefaultStyle(defaultVisualStyle))
       }
       setFormTags('')
       setFormViewCount(null)
     }
-  }, [open, editing, seedCreateForm, onSeedConsumed])
+  }, [open, editing, seedCreateForm, onSeedConsumed, defaultVisualStyle, getDefaultStyle])
 
   const handleOk = async () => {
     if (!formName.trim()) {
@@ -153,7 +179,7 @@ export function StudioAssetTypeFormModal({
         onCancel()
         await onSaved({ type: 'update', id: editing.id, asset: normalizedNext })
       } else {
-        await createAsset({
+        const created = await createAsset({
           id: `asset_${Date.now()}`,
           name: formName.trim(),
           description: formDesc.trim(),
@@ -165,6 +191,13 @@ export function StudioAssetTypeFormModal({
           ...(linkProjectId && linkChapterId ? { chapter_id: linkChapterId } : {}),
           ...(linkProjectId && linkShotId ? { shot_id: linkShotId } : {}),
           ...(nextViewCount === null ? {} : { view_count: nextViewCount }),
+        })
+        notifyShotAssetCreatedAndLinked({
+          projectId: linkProjectId,
+          chapterId: linkChapterId,
+          shotId: linkShotId,
+          assetId: created.id,
+          assetName: formName.trim(),
         })
         message.success('已创建')
         onCancel()
@@ -214,6 +247,7 @@ export function StudioAssetTypeFormModal({
           <ProjectVisualStyleAndStyleFields
             visual_style={formVisualStyle}
             style={formStyle}
+            options={projectStyleOptions}
             onChange={(next) => {
               setFormVisualStyle(next.visual_style)
               setFormStyle(next.style)

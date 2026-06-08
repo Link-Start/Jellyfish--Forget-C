@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.llm import Model, ModelCategoryKey, ModelSettings, Provider
 from app.services.common import entity_not_found
+from app.services.llm.provider_resolver import resolve_effective_base_url
 
 
 def _settings_model_id(settings_row: ModelSettings | None, category: ModelCategoryKey) -> str | None:
@@ -56,29 +57,15 @@ async def get_model_by_category(
                 ) from e
             raise
 
-    if not allow_default_fallback:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"No default model configured for category={category.value}",
-        )
-
-    stmt = (
-        select(Model)
-        .where(Model.category == category, Model.is_default.is_(True))
-        .order_by(Model.updated_at.desc())
-        .limit(1)
+    _ = allow_default_fallback  # 保留参数签名兼容，默认模型来源统一为 ModelSettings。
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=f"No default model configured for category={category.value}",
     )
-    model = (await db.execute(stmt)).scalars().first()
-    if model is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"No default model configured for category={category.value}",
-        )
-    return model
 
 
 async def get_default_model_by_category(db: AsyncSession, category: ModelCategoryKey) -> Model:
-    """按类别解析默认模型，优先读取单例 ModelSettings，缺失时回退 is_default。"""
+    """按类别解析默认模型，仅从单例 ModelSettings 读取。"""
     return await get_model_by_category(db, category, allow_default_fallback=True)
 
 
@@ -125,7 +112,7 @@ async def build_chat_model_from_provider(
     stmt = (
         select(Model)
         .where(Model.provider_id == provider.id, Model.category == ModelCategoryKey.text)
-        .order_by(Model.is_default.desc(), Model.updated_at.desc())
+        .order_by(Model.updated_at.desc())
         .limit(1)
     )
     model = (await db.execute(stmt)).scalars().first()
@@ -135,6 +122,37 @@ async def build_chat_model_from_provider(
             detail=f"No text model configured for provider_id={provider.id}",
         )
 
+    return _build_chat_openai_model(
+        provider=provider,
+        model=model,
+        thinking=True,
+        import_error_detail="Install langchain-openai to build chat model from provider config",
+    )
+
+
+async def build_default_text_llm(
+    db: AsyncSession,
+    *,
+    thinking: bool,
+) -> BaseChatModel:
+    """基于默认文本模型构造 ChatOpenAI。"""
+    model = await get_default_model_by_category(db, ModelCategoryKey.text)
+    provider = await get_provider_by_model_or_id(db, model)
+    return _build_chat_openai_model(
+        provider=provider,
+        model=model,
+        thinking=thinking,
+        import_error_detail="Install langchain-openai (e.g. uv sync --group dev) to use film extraction endpoints",
+    )
+
+
+def _build_chat_openai_model(
+    *,
+    provider: Provider,
+    model: Model,
+    thinking: bool,
+    import_error_detail: str,
+) -> BaseChatModel:
     api_key = (provider.api_key or "").strip()
     if not api_key:
         raise HTTPException(
@@ -147,7 +165,7 @@ async def build_chat_model_from_provider(
     except ImportError as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Install langchain-openai to build chat model from provider config",
+            detail=import_error_detail,
         ) from e
 
     kwargs: dict[str, Any] = dict(model.params or {})
@@ -155,8 +173,13 @@ async def build_chat_model_from_provider(
     kwargs["api_key"] = api_key
     kwargs.setdefault("temperature", 0)
 
-    base_url = (provider.base_url or "").strip()
+    base_url = resolve_effective_base_url(provider=provider, category=ModelCategoryKey.text)
     if base_url:
         kwargs.setdefault("base_url", base_url)
+
+    if not thinking:
+        extra_body = dict(kwargs.get("extra_body") or {})
+        extra_body["enable_thinking"] = False
+        kwargs["extra_body"] = extra_body
 
     return ChatOpenAI(**kwargs)

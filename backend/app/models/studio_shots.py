@@ -14,6 +14,7 @@ from app.models.types import (
     DialogueLineMode,
     ShotCandidateStatus,
     ShotCandidateType,
+    ShotDialogueCandidateStatus,
     ShotFrameType,
     ShotStatus,
     VFXType,
@@ -113,6 +114,12 @@ class Shot(Base,TimestampMixin):
         passive_deletes=True,
         order_by="ShotExtractedCandidate.id",
     )
+    extracted_dialogue_candidates: Mapped[list["ShotExtractedDialogueCandidate"]] = relationship(
+        back_populates="shot",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ShotExtractedDialogueCandidate.index",
+    )
 
     __table_args__ = (
         UniqueConstraint("chapter_id", "index", name="uq_shots_chapter_index"),
@@ -164,6 +171,12 @@ class ShotDetail(Base,TimestampMixin):
         comment="关联场景 ID（可空）；应用层需保证与镜头所属项目一致或全局",
     )
     duration: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="时长（秒）；镜头唯一时长来源")
+    override_video_ratio: Mapped[str | None] = mapped_column(
+        String(16),
+        nullable=True,
+        default=None,
+        comment="分镜级视频比例覆盖（为空表示继承项目默认）",
+    )
     mood_tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list, comment="情绪标签（JSON 数组）")
     atmosphere: Mapped[str] = mapped_column(Text, nullable=False, default="", comment="氛围描述")
     follow_atmosphere: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, comment="是否沿用氛围")
@@ -180,6 +193,12 @@ class ShotDetail(Base,TimestampMixin):
         nullable=False,
         default="",
         comment="分镜整体描述（用于提示词补充）",
+    )
+    action_beats: Mapped[list[str]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        comment="镜头动作拍点（按时间顺序排列，用于关键帧与视频生成）",
     )
     prompt_template_id: Mapped[str | None] = mapped_column(
         String(64),
@@ -429,6 +448,85 @@ class ShotExtractedCandidate(Base, TimestampMixin):
     )
 
 
+class ShotExtractedDialogueCandidate(Base, TimestampMixin):
+    """镜头对白提取候选项。
+
+    与资产候选分表存储，避免把对白确认流和实体关联流混在一起：
+    - pending：待确认
+    - accepted：已接受并写入 ShotDialogLine
+    - ignored：已明确忽略
+    """
+
+    __tablename__ = "shot_extracted_dialogue_candidates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="对白候选自增 ID")
+    shot_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("shots.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="所属镜头 ID",
+    )
+    index: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="镜头内对白候选排序")
+    text: Mapped[str] = mapped_column(Text, nullable=False, comment="提取出的对白文本")
+    line_mode: Mapped[DialogueLineMode] = mapped_column(
+        String(16),
+        nullable=False,
+        default=DialogueLineMode.dialogue,
+        comment="对白模式（DIALOGUE/VOICE_OVER/OFF_SCREEN/PHONE）",
+    )
+    speaker_name: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        index=True,
+        comment="说话角色名称（可空）",
+    )
+    target_name: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        index=True,
+        comment="听者角色名称（可空）",
+    )
+    candidate_status: Mapped[ShotDialogueCandidateStatus] = mapped_column(
+        String(32),
+        nullable=False,
+        default=ShotDialogueCandidateStatus.pending,
+        index=True,
+        comment="对白候选确认状态：pending/accepted/ignored",
+    )
+    linked_dialog_line_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("shot_dialog_lines.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="已接受时写入的对白行 ID",
+    )
+    source: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="extraction",
+        comment="候选来源，当前固定为 extraction",
+    )
+    payload: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        comment="保留提取附加信息，便于后续扩展",
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="对白候选被确认（接受/忽略）时间",
+    )
+
+    shot: Mapped["Shot"] = relationship(back_populates="extracted_dialogue_candidates")
+    linked_dialog_line: Mapped["ShotDialogLine | None"] = relationship()
+
+    __table_args__ = (
+        Index("ix_shot_dialogue_candidates_shot_status", "shot_id", "candidate_status"),
+    )
+
+
 __all__ = [
     "Shot",
     "ShotDetail",
@@ -436,4 +534,5 @@ __all__ = [
     "ShotDialogLine",
     "ShotCharacterLink",
     "ShotExtractedCandidate",
+    "ShotExtractedDialogueCandidate",
 ]

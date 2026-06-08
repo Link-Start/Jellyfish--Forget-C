@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import {
+  Alert,
   Layout,
   Input,
   Button,
@@ -13,7 +14,6 @@ import {
   Modal,
   Form,
   Select,
-  Switch,
   message,
   Tooltip,
   Empty,
@@ -24,8 +24,6 @@ import {
   PlusOutlined,
   EditOutlined,
   DeleteOutlined,
-  StarOutlined,
-  StarFilled,
   CopyOutlined,
   MenuOutlined,
   AppstoreOutlined,
@@ -35,9 +33,17 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import { LlmService } from '../../../services/generated/services/LlmService'
-import type { ModelRead, ModelCategoryKey, ProviderRead } from '../../../services/generated'
+import type {
+  ModelRead,
+  ModelCategoryKey,
+  ProviderRead,
+  ProviderSupportedRead,
+} from '../../../services/generated'
 import {
   MODEL_CATEGORIES,
+  TABLE_ACTION_BTN_EDIT_CLASS,
+  TABLE_ACTION_BTN_MORE_CLASS,
+  TABLE_ACTION_BTN_TEST_CLASS,
   categoryLabelMap,
   categoryColorMap,
   SORT_OPTIONS,
@@ -45,6 +51,7 @@ import {
 
 export default function ModelsTab() {
   const [providers, setProviders] = useState<ProviderRead[]>([])
+  const [supportedProviders, setSupportedProviders] = useState<ProviderSupportedRead[]>([])
   const [models, setModels] = useState<ModelRead[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -56,14 +63,16 @@ export default function ModelsTab() {
   const [categoryFilter, setCategoryFilter] = useState<ModelCategoryKey | null>(null)
   const [modelModalOpen, setModelModalOpen] = useState(false)
   const [modelEditing, setModelEditing] = useState<ModelRead | null>(null)
+  const [providerOptionsLoading, setProviderOptionsLoading] = useState(true)
   const [form] = Form.useForm()
+  const selectedFormCategory = Form.useWatch<ModelCategoryKey | undefined>('category', form)
   const { lg } = Grid.useBreakpoint()
   const isLargeScreen = lg ?? false
 
   const load = async () => {
     setLoading(true)
     try {
-      const [provRes, modelsRes] = await Promise.all([
+      const [provRes, modelsRes, supportedRes] = await Promise.all([
         LlmService.listProvidersApiV1LlmProvidersGet({ page: 1, pageSize: 100 }),
         LlmService.listModelsApiV1LlmModelsGet({
           q: search.trim() || undefined,
@@ -72,13 +81,16 @@ export default function ModelsTab() {
           page: 1,
           pageSize: 100,
         }),
+        LlmService.listSupportedProvidersApiV1LlmProvidersSupportedGet({}),
       ])
       setProviders(provRes.data?.items ?? [])
       setModels(modelsRes.data?.items ?? [])
+      setSupportedProviders(supportedRes.data ?? [])
     } catch {
       message.error('加载失败')
     } finally {
       setLoading(false)
+      setProviderOptionsLoading(false)
     }
   }
 
@@ -112,6 +124,60 @@ export default function ModelsTab() {
 
   const getProviderName = (id: string) => providers.find((p) => p.id === id)?.name ?? id
 
+  const resolveProviderSpec = (providerName: string) =>
+    supportedProviders.find(
+      (spec) => spec.display_name === providerName || (spec.aliases?.length && spec.aliases.includes(providerName)),
+    )
+
+  const filteredProviderOptions = useMemo(() => {
+    if (!selectedFormCategory) return providers.map((p) => ({ label: p.name, value: p.id }))
+    return providers
+      .filter((provider) => {
+        const spec = resolveProviderSpec(provider.name)
+        return !!spec?.supported_categories?.includes(selectedFormCategory)
+      })
+      .map((p) => ({ label: p.name, value: p.id }))
+  }, [providers, selectedFormCategory, supportedProviders])
+
+  const editingUnsupportedProviderOption = useMemo(() => {
+    if (!modelEditing) return null
+    const provider = providers.find((p) => p.id === modelEditing.provider_id)
+    if (!provider) return null
+    const alreadyInOptions = filteredProviderOptions.some((opt) => opt.value === provider.id)
+    if (alreadyInOptions) return null
+    return {
+      label: `${provider.name}（历史/当前不支持所选类别）`,
+      value: provider.id,
+    }
+  }, [filteredProviderOptions, modelEditing, providers])
+
+  const providerSelectOptions = useMemo(
+    () =>
+      editingUnsupportedProviderOption
+        ? [editingUnsupportedProviderOption, ...filteredProviderOptions]
+        : filteredProviderOptions,
+    [editingUnsupportedProviderOption, filteredProviderOptions],
+  )
+  const unsupportedProviderWarning = useMemo(() => {
+    if (!editingUnsupportedProviderOption || !selectedFormCategory) return null
+    const provider = providers.find((p) => p.id === editingUnsupportedProviderOption.value)
+    if (!provider) return null
+    const categoryLabel = categoryLabelMap[selectedFormCategory]
+    return `当前模型绑定供应商「${provider.name}」不支持「${categoryLabel}」类别，保存前建议切换到支持该类别的供应商。`
+  }, [editingUnsupportedProviderOption, providers, selectedFormCategory])
+
+  useEffect(() => {
+    if (!selectedFormCategory) return
+    const providerId = form.getFieldValue('provider_id') as string | undefined
+    if (!providerId) return
+    const stillSupported = filteredProviderOptions.some((opt) => opt.value === providerId)
+    const keepHistoricalEditingProvider = modelEditing?.provider_id === providerId
+    if (!stillSupported && !keepHistoricalEditingProvider) {
+      form.setFieldsValue({ provider_id: undefined })
+      message.warning('当前供应商不支持所选模型类别，请重新选择')
+    }
+  }, [filteredProviderOptions, form, modelEditing, selectedFormCategory])
+
   const handleSaveModel = async () => {
     try {
       const values = await form.validateFields()
@@ -132,7 +198,6 @@ export default function ModelsTab() {
             provider_id: values.provider_id,
             description: values.description ?? null,
             params,
-            is_default: values.is_default,
           },
         })
         message.success('模型已更新')
@@ -145,7 +210,6 @@ export default function ModelsTab() {
           typeof crypto !== 'undefined' && crypto.randomUUID
             ? crypto.randomUUID()
             : `model_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
-        const isDefault = values.is_default === true
         await LlmService.createModelApiV1LlmModelsPost({
           requestBody: {
             id: modelId,
@@ -154,7 +218,6 @@ export default function ModelsTab() {
             provider_id: values.provider_id,
             description: values.description,
             params,
-            is_default: isDefault,
           },
         })
         message.success('模型已添加')
@@ -167,22 +230,6 @@ export default function ModelsTab() {
       if (e && typeof e === 'object' && 'errorFields' in e) return
       message.error('保存失败')
     }
-  }
-
-  const handleSetDefaultModel = (model: ModelRead) => {
-    Modal.confirm({
-      title: '设为默认',
-      content: '此操作将替换当前该类别的默认模型。',
-      onOk: async () => {
-        await LlmService.updateModelApiV1LlmModelsModelIdPatch({
-          modelId: model.id,
-          requestBody: { is_default: true },
-        })
-        message.success('已设为默认')
-        void load()
-        if (selectedModel?.id === model.id) setSelectedModel({ ...model, is_default: true })
-      },
-    })
   }
 
   const handleDeleteModel = (m: ModelRead) => {
@@ -209,12 +256,25 @@ export default function ModelsTab() {
         provider_id: m.provider_id,
         description: m.description,
         params: JSON.stringify(m.params ?? {}, null, 2),
-        is_default: m.is_default ?? false,
       })
     } else {
       form.resetFields()
-      form.setFieldsValue({ category: 'text', is_default: false })
+      form.setFieldsValue({ category: 'text' })
     }
+    setModelModalOpen(true)
+  }
+
+  /** 基于已有模型打开「添加模型」浮窗，预填字段，名称追加「-复制」。 */
+  const openCopyModelModal = (source: ModelRead) => {
+    setModelEditing(null)
+    form.resetFields()
+    form.setFieldsValue({
+      name: `${source.name}-复制`,
+      category: source.category,
+      provider_id: source.provider_id,
+      description: source.description ?? '',
+      params: JSON.stringify(source.params ?? {}, null, 2),
+    })
     setModelModalOpen(true)
   }
 
@@ -224,12 +284,7 @@ export default function ModelsTab() {
       dataIndex: 'name',
       key: 'name',
       ellipsis: true,
-      render: (n, r) => (
-        <Space>
-          {r.is_default && <StarFilled style={{ color: '#faad14' }} />}
-          {n}
-        </Space>
-      ),
+      render: (n) => <Space>{n}</Space>,
     },
     {
       title: '类别',
@@ -268,21 +323,6 @@ export default function ModelsTab() {
       render: (d: string) => <Tooltip title={d}>{d || '—'}</Tooltip>,
     },
     {
-      title: '默认',
-      dataIndex: 'is_default',
-      key: 'is_default',
-      width: 70,
-      render: (isDefault: boolean, record) =>
-        isDefault ? (
-          <StarFilled style={{ color: '#faad14' }} />
-        ) : (
-          <StarOutlined
-            className="text-gray-400 hover:text-amber-500 cursor-pointer"
-            onClick={() => handleSetDefaultModel(record)}
-          />
-        ),
-    },
-    {
       title: '创建人',
       dataIndex: 'created_by',
       key: 'created_by',
@@ -292,31 +332,69 @@ export default function ModelsTab() {
     {
       title: '操作',
       key: 'action',
-      width: 180,
+      width: 112,
+      fixed: 'right',
+      align: 'center',
       render: (_, record) => (
-        <Space size="small">
-          <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openModelModal(record)}>
-            编辑
-          </Button>
-          <Button type="link" size="small" icon={<ThunderboltOutlined />}>
-            测试生成
-          </Button>
+        <Space size={4} className="flex-nowrap justify-center">
+          <Tooltip title="编辑">
+            <Button
+              type="text"
+              size="small"
+              className={TABLE_ACTION_BTN_EDIT_CLASS}
+              icon={<EditOutlined />}
+              onClick={(e) => {
+                e.stopPropagation()
+                openModelModal(record)
+              }}
+            />
+          </Tooltip>
+          <Tooltip title="测试生成">
+            <Button
+              type="text"
+              size="small"
+              className={TABLE_ACTION_BTN_TEST_CLASS}
+              icon={<ThunderboltOutlined />}
+              onClick={(e) => {
+                e.stopPropagation()
+              }}
+            />
+          </Tooltip>
           <Dropdown
             menu={{
               items: [
-                { key: 'copy', label: '复制', icon: <CopyOutlined /> },
+                {
+                  key: 'copy',
+                  label: '复制',
+                  icon: <CopyOutlined />,
+                  onClick: ({ domEvent }) => {
+                    domEvent.stopPropagation()
+                    openCopyModelModal(record)
+                  },
+                },
                 {
                   key: 'delete',
                   label: '删除',
                   danger: true,
                   icon: <DeleteOutlined />,
-                  onClick: () => handleDeleteModel(record),
+                  onClick: ({ domEvent }) => {
+                    domEvent.stopPropagation()
+                    handleDeleteModel(record)
+                  },
                 },
               ],
             }}
             trigger={['click']}
           >
-            <Button type="link" size="small" icon={<MenuOutlined />} />
+            <Tooltip title="更多">
+              <Button
+                type="text"
+                size="small"
+                className={TABLE_ACTION_BTN_MORE_CLASS}
+                icon={<MenuOutlined />}
+                onClick={(e) => e.stopPropagation()}
+              />
+            </Tooltip>
           </Dropdown>
         </Space>
       ),
@@ -428,6 +506,7 @@ export default function ModelsTab() {
                 loading={loading}
                 columns={modelColumns}
                 dataSource={modelList}
+                scroll={{ x: 1024 }}
                 pagination={{ pageSize: 20 }}
                 onRow={(record) => ({
                   onClick: () => {
@@ -472,10 +551,23 @@ export default function ModelsTab() {
                       menu={{
                         items: [
                           {
+                            key: 'copy',
+                            label: '复制',
+                            icon: <CopyOutlined />,
+                            onClick: ({ domEvent }) => {
+                              domEvent.stopPropagation()
+                              openCopyModelModal(m)
+                            },
+                          },
+                          {
                             key: 'delete',
                             label: '删除',
                             danger: true,
-                            onClick: () => handleDeleteModel(m),
+                            icon: <DeleteOutlined />,
+                            onClick: ({ domEvent }) => {
+                              domEvent.stopPropagation()
+                              handleDeleteModel(m)
+                            },
                           },
                         ],
                       }}
@@ -489,7 +581,6 @@ export default function ModelsTab() {
                 >
                   <div className="flex items-center gap-2 mb-2">
                     <Tag color={categoryColorMap[m.category]}>{categoryLabelMap[m.category]}</Tag>
-                    {m.is_default && <StarFilled style={{ color: '#faad14' }} />}
                   </div>
                   <div className="font-medium mb-1">{m.name}</div>
                   <div className="text-gray-500 text-sm mb-1">
@@ -615,23 +706,35 @@ export default function ModelsTab() {
             rules={[{ required: true, message: '请选择供应商' }]}
           >
             <Select
-              placeholder="选择供应商（请先添加供应商）"
-              options={providers.map((p) => ({ label: p.name, value: p.id }))}
+              loading={providerOptionsLoading}
+              placeholder={
+                selectedFormCategory
+                  ? `选择支持${categoryLabelMap[selectedFormCategory]}的供应商`
+                  : '选择供应商（请先添加供应商）'
+              }
+              options={providerSelectOptions}
+              notFoundContent={
+                providerOptionsLoading
+                  ? '加载中…'
+                  : selectedFormCategory
+                    ? '暂无支持该类别的供应商'
+                    : '暂无供应商'
+              }
             />
           </Form.Item>
+          {unsupportedProviderWarning && (
+            <Alert
+              type="warning"
+              showIcon
+              className="mb-4"
+              message={unsupportedProviderWarning}
+            />
+          )}
           <Form.Item name="params" label="参数（JSON）">
             <Input.TextArea rows={3} placeholder='{"max_tokens": 4096, "temperature": 0.7}' />
           </Form.Item>
           <Form.Item name="description" label="描述">
             <Input.TextArea rows={2} />
-          </Form.Item>
-          <Form.Item
-            name="is_default"
-            label="设为该类别默认"
-            valuePropName="checked"
-            initialValue={false}
-          >
-            <Switch />
           </Form.Item>
         </Form>
       </Modal>

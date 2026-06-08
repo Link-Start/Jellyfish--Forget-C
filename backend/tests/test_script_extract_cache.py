@@ -53,6 +53,8 @@ async def test_extract_script_uses_cache_by_default(monkeypatch):
 
     monkeypatch.setattr(route, "ElementExtractorAgent", _FakeAgent)
     monkeypatch.setattr(route, "sync_shot_extracted_candidates_from_draft", _async_noop)
+    monkeypatch.setattr(route, "sync_shot_extracted_dialogue_candidates_from_draft", _async_noop)
+    monkeypatch.setattr(route, "apply_shot_semantic_defaults_from_draft", _async_noop)
 
     request = route.ScriptExtractRequest(
         project_id="project-1",
@@ -88,6 +90,8 @@ async def test_extract_script_refresh_cache_forces_recompute(monkeypatch):
 
     monkeypatch.setattr(route, "ElementExtractorAgent", _FakeAgent)
     monkeypatch.setattr(route, "sync_shot_extracted_candidates_from_draft", _async_noop)
+    monkeypatch.setattr(route, "sync_shot_extracted_dialogue_candidates_from_draft", _async_noop)
+    monkeypatch.setattr(route, "apply_shot_semantic_defaults_from_draft", _async_noop)
 
     request = route.ScriptExtractRequest(
         project_id="project-1",

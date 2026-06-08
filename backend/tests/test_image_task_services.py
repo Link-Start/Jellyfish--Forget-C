@@ -7,9 +7,21 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from app.models.studio import AssetViewAngle, FileItem, ShotFrameType
+from app.models.studio import (
+    Actor,
+    ActorImage,
+    AssetViewAngle,
+    Character,
+    CharacterImage,
+    Costume,
+    FileItem,
+    ShotFrameType,
+)
 from app.schemas.studio.shots import ShotLinkedAssetItem
-from app.services.studio import image_task_prompts as prompts
+from app.services.studio.generation.asset_image import build_base as asset_base
+from app.services.studio.generation.frame.build_base import build_frame_base_draft
+from app.services.studio.generation.frame.build_context import build_frame_context
+from app.services.studio.generation.frame.derive_preview import derive_frame_preview
 from app.services.studio.image_task_references import (
     pick_ordered_ref_file_ids,
     resolve_reference_file_ids_and_names_from_linked_items,
@@ -88,8 +100,8 @@ async def test_validate_actor_image_returns_row_when_belongs_to_actor():
     image = SimpleNamespace(id=1, actor_id="actor-1")
     db = _FakeDB(
         mapping={
-            (prompts.Actor, "actor-1"): actor,
-            (prompts.ActorImage, 1): image,
+            (Actor, "actor-1"): actor,
+            (ActorImage, 1): image,
         }
     )
 
@@ -117,7 +129,7 @@ async def test_validate_asset_image_and_relation_type_rejects_invalid_asset_type
 @pytest.mark.asyncio
 async def test_validate_character_image_requires_image_id():
     character = SimpleNamespace(id="char-1")
-    db = _FakeDB(mapping={(prompts.Character, "char-1"): character})
+    db = _FakeDB(mapping={(Character, "char-1"): character})
 
     with pytest.raises(HTTPException) as exc:
         await validate_character_image(db, character_id="char-1", image_id=None)
@@ -184,7 +196,7 @@ async def test_pick_ordered_ref_file_ids_returns_requested_angle_order(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_build_actor_prompt_and_refs_front_view_returns_no_refs(monkeypatch):
+async def test_build_actor_image_base_draft_front_view_returns_no_refs(monkeypatch):
     actor = SimpleNamespace(
         id="actor-1",
         name="演员A",
@@ -202,30 +214,30 @@ async def test_build_actor_prompt_and_refs_front_view_returns_no_refs(monkeypatc
     )
     db = _FakeDB(
         mapping={
-            (prompts.Actor, "actor-1"): actor,
-            (prompts.ActorImage, 1): image,
+            (Actor, "actor-1"): actor,
+            (ActorImage, 1): image,
         }
     )
 
     async def _fake_build_prompt(*_args, **_kwargs):
         return "演员渲染提示词"
 
-    monkeypatch.setattr(prompts, "build_prompt_with_template", _fake_build_prompt)
-    monkeypatch.setattr(prompts, "asset_prompt_category", lambda **_kwargs: "actor_front")
+    monkeypatch.setattr(asset_base, "build_prompt_with_template", _fake_build_prompt)
+    monkeypatch.setattr(asset_base, "asset_prompt_category", lambda **_kwargs: "actor_front")
 
-    prompt, refs, image_row = await prompts.build_actor_prompt_and_refs(
+    draft = await asset_base.build_actor_image_base_draft(
         db,
         actor_id="actor-1",
         image_id=1,
     )
 
-    assert prompt == "演员渲染提示词"
-    assert refs == []
-    assert image_row is image
+    assert draft.prompt == "演员渲染提示词"
+    assert draft.default_images == []
+    assert draft.image_id == 1
 
 
 @pytest.mark.asyncio
-async def test_build_character_prompt_and_refs_combines_actor_and_costume_refs(monkeypatch):
+async def test_build_character_image_base_draft_combines_actor_and_costume_refs(monkeypatch):
     character = SimpleNamespace(
         id="char-1",
         name="角色A",
@@ -244,10 +256,10 @@ async def test_build_character_prompt_and_refs_combines_actor_and_costume_refs(m
     )
     db = _FakeDB(
         mapping={
-            (prompts.Character, "char-1"): character,
-            (prompts.CharacterImage, 1): image,
-            (prompts.Actor, "actor-1"): SimpleNamespace(id="actor-1"),
-            (prompts.Costume, "costume-1"): SimpleNamespace(id="costume-1"),
+            (Character, "char-1"): character,
+            (CharacterImage, 1): image,
+            (Actor, "actor-1"): SimpleNamespace(id="actor-1"),
+            (Costume, "costume-1"): SimpleNamespace(id="costume-1"),
         }
     )
 
@@ -259,70 +271,124 @@ async def test_build_character_prompt_and_refs_combines_actor_and_costume_refs(m
             return ["actor-front", "actor-left"]
         return ["costume-front"]
 
-    monkeypatch.setattr(prompts, "build_prompt_with_template", _fake_build_prompt)
-    monkeypatch.setattr(prompts, "pick_ordered_ref_file_ids", _fake_pick_ordered)
+    monkeypatch.setattr(asset_base, "build_prompt_with_template", _fake_build_prompt)
+    monkeypatch.setattr(asset_base, "pick_ordered_ref_file_ids", _fake_pick_ordered)
 
-    prompt, refs, image_row = await prompts.build_character_prompt_and_refs(
+    draft = await asset_base.build_character_image_base_draft(
         db,
         character_id="char-1",
         image_id=1,
     )
 
-    assert prompt == "角色合成提示词"
-    assert refs == ["actor-front", "actor-left", "costume-front"]
-    assert image_row is image
+    assert draft.prompt == "角色合成提示词"
+    assert draft.default_images == ["actor-front", "actor-left", "costume-front"]
+    assert draft.image_id == 1
 
 
-@pytest.mark.asyncio
-async def test_build_shot_frame_prompt_and_refs_replaces_character_names(monkeypatch):
-    project = SimpleNamespace(visual_style="写实", style="悬疑")
-    chapter = SimpleNamespace(project=project)
-    shot = SimpleNamespace(chapter=chapter)
-    shot_detail = SimpleNamespace(
-        id="shot-1",
-        shot=shot,
-        description="雨夜对峙",
-        atmosphere="紧张",
-        mood_tags=["压迫", "危险"],
-        camera_shot="近景",
-        angle="平视",
-        movement="推镜",
-        first_frame_prompt="张三在雨夜中回头",
-        last_frame_prompt="张三和李四同时看向门口",
-        key_frame_prompt="张三逼近李四",
-    )
-    role_links = [
-        SimpleNamespace(character=SimpleNamespace(id="char-1", name="张三")),
-        SimpleNamespace(character=SimpleNamespace(id="char-2", name="李四")),
-    ]
-    db = _FakeDB(
-        execute_results=[
-            _FakeExecuteResult(single=shot_detail),
-            _FakeExecuteResult(rows=role_links),
-        ]
-    )
-
-    async def _fake_pick_front(*_args, parent_id: str, **_kwargs):
-        return f"{parent_id}-front"
-
-    captured: dict[str, object] = {}
-
-    async def _fake_build_prompt(*_args, **kwargs):
-        captured.update(kwargs["variables"])
-        return "镜头帧提示词"
-
-    monkeypatch.setattr(prompts, "pick_front_ref_file_id", _fake_pick_front)
-    monkeypatch.setattr(prompts, "build_prompt_with_template", _fake_build_prompt)
-    monkeypatch.setattr(prompts, "shot_frame_prompt_category", lambda _ft: "shot_frame")
-
-    prompt, refs, detail = await prompts.build_shot_frame_prompt_and_refs(
-        db,
+def test_derive_frame_preview_replaces_reference_names_with_stable_order() -> None:
+    base = build_frame_base_draft(
         shot_id="shot-1",
         frame_type=ShotFrameType.first,
+        prompt="张三在雨夜中逼近李四",
+        director_command_summary="必须：锁定主角视线方向；优先：保持同场景轴线稳定",
+        continuity_guidance="当前镜头应承接上一镜头的动作与情绪，不要像全新场面重新开局",
+        frame_specific_guidance="首帧只表现受惊瞬间，人物身体骤然僵住，动作尚未完成",
+        composition_anchor="以门口灯光和主角站位作为画面重心，保持环境与人物同时可读",
+        screen_direction_guidance="保持张三与李四的左右站位和对视方向稳定，避免无故翻转朝向",
+    )
+    context = build_frame_context(
+        shot_id="shot-1",
+        frame_type=ShotFrameType.first,
+        items=[
+            ShotLinkedAssetItem(id="char-1", type="character", name="张三", file_id="char-1-front"),
+            ShotLinkedAssetItem(id="char-2", type="character", name="李四", file_id="char-2-front"),
+        ],
     )
 
-    assert prompt == "镜头帧提示词"
-    assert refs == ["char-1-front", "char-2-front"]
-    assert detail is shot_detail
-    assert captured["base_prompt"] == "图一在雨夜中回头"
-    assert captured["key_frame_prompt"] == "图一逼近图二"
+    preview = derive_frame_preview(base=base, context=context)
+
+    assert preview.images == ["char-1-front", "char-2-front"]
+    assert preview.mappings[0].token == "图1"
+    assert preview.mappings[1].token == "图2"
+    assert preview.selected_guidance == [
+        "高优先级导演指令：必须：锁定主角视线方向；优先：保持同场景轴线稳定",
+        "当前帧职责：首帧只表现受惊瞬间，人物身体骤然僵住，动作尚未完成",
+        "连续性要求：当前镜头应承接上一镜头的动作与情绪，不要像全新场面重新开局",
+    ]
+    assert preview.dropped_guidance == [
+        "构图锚点：以门口灯光和主角站位作为画面重心，保持环境与人物同时可读",
+        "朝向与视线：保持张三与李四的左右站位和对视方向稳定，避免无故翻转朝向",
+    ]
+    assert preview.selected_guidance_details[1].reason_tag == "首帧保时序"
+    assert preview.selected_guidance_details[1].reason == "当前是首帧，系统优先保留触发瞬间与未完成态约束，避免画面直接跳到后续完成动作。"
+    assert preview.dropped_guidance_details[0].reason_tag == "首帧降构图"
+    assert preview.dropped_guidance_details[1].reason_tag == "首帧降轴线"
+    assert "高优先级导演指令：必须：锁定主角视线方向；优先：保持同场景轴线稳定" in preview.rendered_prompt
+    assert "当前帧职责：首帧只表现受惊瞬间，人物身体骤然僵住，动作尚未完成" in preview.rendered_prompt
+    assert "连续性要求：当前镜头应承接上一镜头的动作与情绪，不要像全新场面重新开局" in preview.rendered_prompt
+    assert "构图锚点：以门口灯光和主角站位作为画面重心，保持环境与人物同时可读" not in preview.rendered_prompt
+    assert "朝向与视线：保持张三与李四的左右站位和对视方向稳定，避免无故翻转朝向" not in preview.rendered_prompt
+    assert "图1在雨夜中逼近图2" in preview.rendered_prompt
+
+
+def test_derive_frame_preview_prioritizes_composition_for_first_frame() -> None:
+    base = build_frame_base_draft(
+        shot_id="shot-2",
+        frame_type=ShotFrameType.first,
+        prompt="主角推门进入空旷大厅",
+        director_command_summary="必须：先建立空间",
+        continuity_guidance="当前镜头应承接上一镜头的动作与情绪",
+        frame_specific_guidance="首帧优先表现推门瞬间和人物尚未完全进入大厅的状态",
+        composition_anchor="以门框、人物站位和大厅纵深作为空间锚点，优先建立环境与人物关系",
+        screen_direction_guidance="保持人物朝向稳定",
+    )
+    context = build_frame_context(
+        shot_id="shot-2",
+        frame_type=ShotFrameType.first,
+        items=[],
+    )
+
+    preview = derive_frame_preview(base=base, context=context)
+
+    assert preview.selected_guidance[1] == "当前帧职责：首帧优先表现推门瞬间和人物尚未完全进入大厅的状态"
+    assert preview.dropped_guidance == [
+        "构图锚点：以门框、人物站位和大厅纵深作为空间锚点，优先建立环境与人物关系",
+        "朝向与视线：保持人物朝向稳定",
+    ]
+    assert preview.selected_guidance_details[1].reason_tag == "首帧保时序"
+    assert preview.selected_guidance_details[1].reason == "当前是首帧，系统优先保留触发瞬间与未完成态约束，避免画面直接跳到后续完成动作。"
+    assert "当前帧职责：首帧优先表现推门瞬间和人物尚未完全进入大厅的状态" in preview.rendered_prompt
+    assert "构图锚点：以门框、人物站位和大厅纵深作为空间锚点，优先建立环境与人物关系" not in preview.rendered_prompt
+    assert "朝向与视线：保持人物朝向稳定" not in preview.rendered_prompt
+
+
+def test_derive_frame_preview_prioritizes_screen_guidance_for_key_frame() -> None:
+    base = build_frame_base_draft(
+        shot_id="shot-3",
+        frame_type=ShotFrameType.key,
+        prompt="两人对峙，情绪到达顶点",
+        director_command_summary="必须：锁定对峙张力",
+        continuity_guidance="当前镜头应承接上一镜头的动作与情绪",
+        frame_specific_guidance="关键帧应锁定对峙动作的峰值瞬间",
+        composition_anchor="以走廊尽头和人物站位作为空间锚点，保持环境与人物同时可读",
+        screen_direction_guidance="保持两人的左右站位和对视方向稳定，避免跳轴",
+    )
+    context = build_frame_context(
+        shot_id="shot-3",
+        frame_type=ShotFrameType.key,
+        items=[],
+    )
+
+    preview = derive_frame_preview(base=base, context=context)
+
+    assert preview.selected_guidance[2] == "朝向与视线：保持两人的左右站位和对视方向稳定，避免跳轴"
+    assert preview.dropped_guidance == [
+        "当前帧职责：关键帧应锁定对峙动作的峰值瞬间",
+        "构图锚点：以走廊尽头和人物站位作为空间锚点，保持环境与人物同时可读",
+    ]
+    assert preview.selected_guidance_details[2].reason_tag == "关键帧保轴线"
+    assert preview.selected_guidance_details[2].reason == "当前镜头更看重视线与左右轴线稳定，因此优先保留朝向与视线 guidance。"
+    assert preview.dropped_guidance_details[0].reason_tag == "关键帧降峰值"
+    assert "朝向与视线：保持两人的左右站位和对视方向稳定，避免跳轴" in preview.rendered_prompt
+    assert "构图锚点：以走廊尽头和人物站位作为空间锚点，保持环境与人物同时可读" not in preview.rendered_prompt
+    assert "当前帧职责：关键帧应锁定对峙动作的峰值瞬间" not in preview.rendered_prompt

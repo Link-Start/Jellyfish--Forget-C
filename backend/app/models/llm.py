@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -62,7 +62,19 @@ class Provider(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, comment="供应商 ID")
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True, comment="供应商名称")
-    base_url: Mapped[str] = mapped_column(String(1024), nullable=False, comment="API Base URL")
+    base_url: Mapped[str] = mapped_column(String(1024), nullable=False, comment="文本/通用 API Base URL")
+    image_base_url: Mapped[str | None] = mapped_column(
+        String(1024),
+        nullable=True,
+        default=None,
+        comment="图片能力 API Base URL（可选覆盖）",
+    )
+    video_base_url: Mapped[str | None] = mapped_column(
+        String(1024),
+        nullable=True,
+        default=None,
+        comment="视频能力 API Base URL（可选覆盖）",
+    )
     api_key: Mapped[str] = mapped_column(String(4096), nullable=False, default="", comment="API Key（敏感）")
     api_secret: Mapped[str] = mapped_column(String(4096), nullable=False, default="", comment="API Secret（敏感）")
     description: Mapped[str] = mapped_column(Text, nullable=False, default="", comment="说明")
@@ -103,7 +115,6 @@ class Model(Base, TimestampMixin):
     )
     params: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict, comment="模型参数（JSON）")
     description: Mapped[str] = mapped_column(Text, nullable=False, default="", comment="说明")
-    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="是否默认")
     created_by: Mapped[str] = mapped_column(String(64), nullable=False, default="", comment="创建人")
 
     provider: Mapped["Provider"] = relationship(back_populates="models")

@@ -3,8 +3,10 @@
 /* tslint:disable */
 /* eslint-disable */
 import type { ApiResponse_RenderedPromptResponse_ } from '../models/ApiResponse_RenderedPromptResponse_';
+import type { ApiResponse_RenderedShotFramePromptRead_ } from '../models/ApiResponse_RenderedShotFramePromptRead_';
 import type { ApiResponse_TaskCreated_ } from '../models/ApiResponse_TaskCreated_';
 import type { ShotFrameImageTaskRequest } from '../models/ShotFrameImageTaskRequest';
+import type { ShotFramePromptRenderRequest } from '../models/ShotFramePromptRenderRequest';
 import type { StudioImageTaskRequest } from '../models/StudioImageTaskRequest';
 import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
@@ -204,7 +206,7 @@ export class StudioImageTasksService {
     }
     /**
      * 镜头分镜帧提示词渲染
-     * @returns ApiResponse_RenderedPromptResponse_ Successful Response
+     * @returns ApiResponse_RenderedShotFramePromptRead_ Successful Response
      * @throws ApiError
      */
     public static renderShotFramePromptApiV1StudioImageTasksShotShotIdFrameRenderPromptPost({
@@ -212,8 +214,8 @@ export class StudioImageTasksService {
         requestBody,
     }: {
         shotId: string,
-        requestBody: ShotFrameImageTaskRequest,
-    }): CancelablePromise<ApiResponse_RenderedPromptResponse_> {
+        requestBody: ShotFramePromptRenderRequest,
+    }): CancelablePromise<ApiResponse_RenderedShotFramePromptRead_> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/studio/image-tasks/shot/{shot_id}/frame-render-prompt',

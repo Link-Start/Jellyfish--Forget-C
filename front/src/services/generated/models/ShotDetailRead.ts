@@ -32,6 +32,10 @@ export type ShotDetailRead = {
      */
     duration?: number;
     /**
+     * 分镜级视频比例覆盖；为空表示继承项目默认
+     */
+    override_video_ratio?: (string | null);
+    /**
      * 情绪标签
      */
     mood_tags?: Array<string>;
@@ -55,6 +59,10 @@ export type ShotDetailRead = {
      * 视效说明
      */
     vfx_note?: string;
+    /**
+     * 动作拍点（按时间顺序排列）
+     */
+    action_beats?: Array<string>;
     /**
      * 镜头分镜首帧提示词
      */

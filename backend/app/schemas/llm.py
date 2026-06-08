@@ -13,7 +13,9 @@ class ProviderBase(BaseModel):
     """供应商通用字段（不含敏感字段）。"""
 
     name: str = Field(..., description="供应商名称")
-    base_url: str = Field(..., description="API Base URL")
+    base_url: str = Field(..., description="文本/通用 API Base URL")
+    image_base_url: str | None = Field(None, description="图片能力 API Base URL（可选覆盖）")
+    video_base_url: str | None = Field(None, description="视频能力 API Base URL（可选覆盖）")
     description: str = Field("", description="说明")
     status: ProviderStatus = Field(
         ProviderStatus.testing,
@@ -34,7 +36,9 @@ class ProviderUpdate(BaseModel):
     """更新供应商时的可选字段。"""
 
     name: str | None = Field(None, description="供应商名称")
-    base_url: str | None = Field(None, description="API Base URL")
+    base_url: str | None = Field(None, description="文本/通用 API Base URL")
+    image_base_url: str | None = Field(None, description="图片能力 API Base URL（可选覆盖）")
+    video_base_url: str | None = Field(None, description="视频能力 API Base URL（可选覆盖）")
     description: str | None = Field(None, description="说明")
     status: ProviderStatus | None = Field(
         None,
@@ -52,6 +56,46 @@ class ProviderRead(ProviderBase):
     id: str = Field(..., description="供应商 ID")
 
 
+class ProviderSupportedRead(BaseModel):
+    """系统支持的供应商能力清单。"""
+
+    key: str = Field(..., description="供应商稳定键")
+    display_name: str = Field(..., description="供应商展示名")
+    aliases: list[str] = Field(default_factory=list, description="可识别别名")
+    supported_categories: list[ModelCategoryKey] = Field(
+        default_factory=list,
+        description="支持的模型类别",
+    )
+    default_base_url: str | None = Field(None, description="默认 API Base URL")
+    requires_api_key: bool = Field(True, description="是否要求 api_key")
+    requires_api_secret: bool = Field(False, description="是否要求 api_secret")
+    is_experimental: bool = Field(False, description="是否实验性供应商")
+
+
+class VideoGenerationOptionsRead(BaseModel):
+    """当前默认视频模型对应的生成参数选项。"""
+
+    provider: str = Field(..., description="供应商稳定键")
+    model_id: str = Field(..., description="默认视频模型 ID")
+    model_name: str = Field(..., description="默认视频模型名称")
+    allowed_ratios: list[str] = Field(default_factory=list, description="当前模型允许的比例选项")
+    default_ratio: str = Field(..., description="当前模型默认比例")
+
+
+class ImageGenerationOptionsRead(BaseModel):
+    """当前默认图片模型对应的关键帧规格选项。"""
+
+    provider: str = Field(..., description="供应商稳定键")
+    model_id: str = Field(..., description="默认图片模型 ID")
+    model_name: str = Field(..., description="默认图片模型名称")
+    supported_ratios: list[str] = Field(default_factory=list, description="当前模型支持的目标比例")
+    default_resolution_profile: str = Field(..., description="当前模型默认分辨率档位")
+    ratio_size_profiles: dict[str, dict[str, str]] = Field(
+        default_factory=dict,
+        description="按比例和分辨率档位映射得到的像素尺寸",
+    )
+
+
 class ModelBase(BaseModel):
     """模型通用字段。"""
 
@@ -60,7 +104,6 @@ class ModelBase(BaseModel):
     provider_id: str = Field(..., description="所属供应商 ID")
     params: dict[str, Any] = Field(default_factory=dict, description="模型参数（JSON）")
     description: str = Field("", description="说明")
-    is_default: bool = Field(False, description="是否默认")
     created_by: str = Field("", description="创建人")
 
 
@@ -78,7 +121,6 @@ class ModelUpdate(BaseModel):
     provider_id: str | None = Field(None, description="所属供应商 ID")
     params: dict[str, Any] | None = Field(None, description="模型参数（JSON）")
     description: str | None = Field(None, description="说明")
-    is_default: bool | None = Field(None, description="是否默认")
 
 
 class ModelRead(ModelBase):

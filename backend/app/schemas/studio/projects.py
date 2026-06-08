@@ -20,6 +20,7 @@ class ProjectBase(BaseModel):
     seed: int = Field(0, description="随机种子")
     unify_style: bool = Field(True, description="是否统一风格")
     progress: int = Field(0, description="进度百分比（0-100）")
+    default_video_ratio: str | None = Field(None, description="项目级默认视频比例；分镜未覆盖时生效")
     stats: dict[str, Any] = Field(default_factory=dict, description="聚合统计（JSON）")
 
 
@@ -35,6 +36,7 @@ class ProjectUpdate(BaseModel):
     seed: int | None = None
     unify_style: bool | None = None
     progress: int | None = None
+    default_video_ratio: str | None = None
     stats: dict[str, Any] | None = None
 
 
@@ -75,3 +77,24 @@ class ChapterRead(ChapterBase):
 
     id: str
     shot_count: int = Field(0, description="分镜数（shots 条数聚合）")
+
+
+class StyleOption(BaseModel):
+    """通用下拉选项。"""
+
+    value: str = Field(..., description="选项值")
+    label: str = Field(..., description="选项展示文案")
+
+
+class ProjectStyleOptionsRead(BaseModel):
+    """项目风格候选项。"""
+
+    visual_styles: list[StyleOption] = Field(default_factory=list, description="视觉风格可选项")
+    styles_by_visual_style: dict[str, list[StyleOption]] = Field(
+        default_factory=dict,
+        description="按视觉风格分组的视频风格选项",
+    )
+    default_style_by_visual_style: dict[str, str] = Field(
+        default_factory=dict,
+        description="各视觉风格默认视频风格",
+    )

@@ -4,7 +4,6 @@ import { EditOutlined, PlusOutlined, UserOutlined } from '@ant-design/icons'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   StudioProjectsService,
-  StudioShotCharacterLinksService,
   StudioShotLinksService,
 } from '../../../../../services/generated'
 import type { ProjectActorLinkRead, ProjectCostumeLinkRead } from '../../../../../services/generated'
@@ -13,10 +12,10 @@ import { resolveAssetUrl } from '../../../assets/utils'
 import { DisplayImageCard } from '../../../assets/components/DisplayImageCard'
 import { StudioEntitiesApi } from '../../../../../services/studioEntities'
 import {
-  PROJECT_STYLE_OPTIONS_BY_VISUAL,
   ProjectVisualStyleAndStyleFields,
   type ProjectVisualStyleChoice,
 } from '../../../project/ProjectVisualStyleAndStyleFields'
+import { useProjectStyleOptions } from '../../../project/useProjectStyleOptions'
 
 type ActorLike = {
   id: string
@@ -32,7 +31,33 @@ type CostumeLike = {
   thumbnail?: string
 }
 
+function notifyShotAssetCreatedAndLinked(payload: {
+  projectId?: string
+  chapterId?: string | null
+  shotId?: string | null
+  assetId?: string
+  assetName: string
+}) {
+  if (!payload.projectId || !payload.chapterId || !payload.shotId) return
+  try {
+    window.opener?.postMessage(
+      {
+        type: 'studio-shot-asset-created-and-linked',
+        projectId: payload.projectId,
+        chapterId: payload.chapterId,
+        shotId: payload.shotId,
+        assetId: payload.assetId ?? null,
+        assetName: payload.assetName,
+      },
+      window.location.origin,
+    )
+  } catch {
+    // 跨窗口通知失败不阻塞角色创建成功。
+  }
+}
+
 export function RolesTab() {
+  const { options: projectStyleOptions, defaultVisualStyle, getDefaultStyle } = useProjectStyleOptions()
   const navigate = useNavigate()
   const { projectId } = useParams<{ projectId: string }>()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -41,6 +66,7 @@ export function RolesTab() {
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [pendingShotLinkShotId, setPendingShotLinkShotId] = useState<string | null>(null)
+  const [pendingShotLinkChapterId, setPendingShotLinkChapterId] = useState<string | null>(null)
   const [formName, setFormName] = useState('')
   const [formDesc, setFormDesc] = useState('')
   const [formActorId, setFormActorId] = useState<string | undefined>(undefined)
@@ -51,10 +77,10 @@ export function RolesTab() {
   const [actorsById, setActorsById] = useState<Record<string, ActorLike>>({})
   const [costumesById, setCostumesById] = useState<Record<string, CostumeLike>>({})
   const [loadingLinks, setLoadingLinks] = useState(false)
-  const [projectVisualStyle, setProjectVisualStyle] = useState<ProjectVisualStyleChoice>('现实')
-  const [projectStyle, setProjectStyle] = useState<string>(PROJECT_STYLE_OPTIONS_BY_VISUAL['现实'][0]?.value ?? '真人都市')
-  const [formVisualStyle, setFormVisualStyle] = useState<ProjectVisualStyleChoice>('现实')
-  const [formStyle, setFormStyle] = useState<string>(PROJECT_STYLE_OPTIONS_BY_VISUAL['现实'][0]?.value ?? '真人都市')
+  const [projectVisualStyle, setProjectVisualStyle] = useState<ProjectVisualStyleChoice>(defaultVisualStyle as ProjectVisualStyleChoice)
+  const [projectStyle, setProjectStyle] = useState<string>(getDefaultStyle(defaultVisualStyle))
+  const [formVisualStyle, setFormVisualStyle] = useState<ProjectVisualStyleChoice>(defaultVisualStyle as ProjectVisualStyleChoice)
+  const [formStyle, setFormStyle] = useState<string>(getDefaultStyle(defaultVisualStyle))
 
   useEffect(() => {
     const create = searchParams.get('create')
@@ -70,9 +96,11 @@ export function RolesTab() {
       setFormCostumeId(undefined)
       const nextVisual = visualStyle || projectVisualStyle
       setFormVisualStyle(nextVisual)
-      setFormStyle(style || projectStyle || (PROJECT_STYLE_OPTIONS_BY_VISUAL[nextVisual]?.[0]?.value ?? '真人都市'))
+      setFormStyle(style || projectStyle || getDefaultStyle(nextVisual))
       const shotIdFromUrl = searchParams.get('shotId')?.trim() ?? ''
+      const chapterIdFromUrl = searchParams.get('chapterId')?.trim() ?? ''
       setPendingShotLinkShotId(shotIdFromUrl || null)
+      setPendingShotLinkChapterId(chapterIdFromUrl || null)
       setCreateOpen(true)
       setSearchParams(
         (prev) => {
@@ -89,10 +117,11 @@ export function RolesTab() {
         { replace: true },
       )
     }
-  }, [projectStyle, projectVisualStyle, searchParams, setSearchParams])
+  }, [getDefaultStyle, projectStyle, projectVisualStyle, searchParams, setSearchParams])
 
   const openNormalRoleCreate = useCallback(() => {
     setPendingShotLinkShotId(null)
+    setPendingShotLinkChapterId(null)
     setFormName('')
     setFormDesc('')
     setFormActorId(undefined)
@@ -186,15 +215,15 @@ export function RolesTab() {
     void (async () => {
       try {
         const res = await StudioProjectsService.getProjectApiV1StudioProjectsProjectIdGet({ projectId })
-        const nextVisual = (res.data?.visual_style as ProjectVisualStyleChoice | undefined) ?? '现实'
-        const nextStyle = (res.data?.style as string | undefined) ?? PROJECT_STYLE_OPTIONS_BY_VISUAL[nextVisual]?.[0]?.value ?? '真人都市'
+        const nextVisual = (res.data?.visual_style as ProjectVisualStyleChoice | undefined) ?? (defaultVisualStyle as ProjectVisualStyleChoice)
+        const nextStyle = (res.data?.style as string | undefined) ?? getDefaultStyle(nextVisual)
         setProjectVisualStyle(nextVisual)
         setProjectStyle(nextStyle)
       } catch {
         // ignore: fallback to default
       }
     })()
-  }, [projectId])
+  }, [defaultVisualStyle, getDefaultStyle, projectId])
 
   const handleCreateRole = async () => {
     if (!projectId) return
@@ -212,6 +241,8 @@ export function RolesTab() {
       const createRes = await StudioEntitiesApi.create('character', {
         id: newId('char'),
         project_id: projectId,
+        chapter_id: pendingShotLinkChapterId,
+        shot_id: pendingShotLinkShotId,
         name,
         description: formDesc.trim() || undefined,
         visual_style: formVisualStyle || '现实',
@@ -221,25 +252,13 @@ export function RolesTab() {
       })
       const charId = (createRes.data as { id?: string } | undefined)?.id
       if (charId && pendingShotLinkShotId) {
-        try {
-          const linksRes = await StudioShotCharacterLinksService.listShotCharacterLinksApiV1StudioShotCharacterLinksGet({
-            shotId: pendingShotLinkShotId,
-          })
-          const links = (linksRes.data ?? []) as Array<{ index?: number | null }>
-          const maxIndex = links.reduce(
-            (m, it) => Math.max(m, typeof it?.index === 'number' ? it.index : -1),
-            -1,
-          )
-          await StudioShotCharacterLinksService.upsertShotCharacterLinkApiV1StudioShotCharacterLinksPost({
-            requestBody: {
-              shot_id: pendingShotLinkShotId,
-              character_id: charId,
-              index: maxIndex + 1,
-            },
-          })
-        } catch {
-          message.warning('角色已创建，但关联到当前分镜失败')
-        }
+        notifyShotAssetCreatedAndLinked({
+          projectId,
+          chapterId: pendingShotLinkChapterId,
+          shotId: pendingShotLinkShotId,
+          assetId: charId,
+          assetName: name,
+        })
       }
       message.success('角色创建成功')
       setCreateOpen(false)
@@ -250,10 +269,12 @@ export function RolesTab() {
       setFormVisualStyle(projectVisualStyle)
       setFormStyle(projectStyle)
       setPendingShotLinkShotId(null)
+      setPendingShotLinkChapterId(null)
       await refresh()
     } catch {
       message.error('创建失败')
       setPendingShotLinkShotId(null)
+      setPendingShotLinkChapterId(null)
     } finally {
       setCreating(false)
     }
@@ -440,6 +461,7 @@ export function RolesTab() {
             <ProjectVisualStyleAndStyleFields
               visual_style={formVisualStyle}
               style={formStyle}
+              options={projectStyleOptions}
               onChange={(next) => {
                 setFormVisualStyle(next.visual_style)
                 setFormStyle(next.style)
